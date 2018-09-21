@@ -34,7 +34,7 @@ environments.
 🐉 See What's Installed
 -----------------------
 
-  ::
+.. code:: python
 
     >>> import mork
     >>> venv = mork.VirtualEnv.from_project_path('/home/user/git/pipenv')
@@ -46,7 +46,7 @@ environments.
 🐉 Install A Package
 --------------------
 
-  ::
+.. code:: python
 
     >>> from requirementslib.models.requirements import Requirement
     >>> r = Requirement.from_line("requests")
@@ -56,7 +56,7 @@ environments.
 🐉 Uninstall a Package
 ----------------------
 
-  ::
+.. code:: python
 
     >>> pkg = "pytz"
     >>> with venv.uninstall(pkg, auto_confirm=True) as uninstall:
@@ -68,7 +68,7 @@ environments.
 🐉 Display Information about Python
 -----------------------------------
 
-  ::
+.. code:: python
 
     >>> venv.python
     '/home/user/.virtualenvs/pipenv-MfOPs1lW/bin/python'
@@ -79,7 +79,7 @@ environments.
 🐉 Run Commands Inside the Virtualenv
 -------------------------------------
 
-  ::
+.. code:: python
 
     >>> cmd = venv.run("env")
     >>> [line for line in cmd.out.splitlines() if line.startswith("VIRTUAL_ENV")]

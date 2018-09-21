@@ -24,6 +24,7 @@ class VirtualEnv(object):
 
     @classmethod
     def from_project_path(cls, path):
+        """Utility for finding a virtualenv location based on a project path"""
         path = vistir.compat.Path(path)
         if path.name == 'Pipfile':
             pipfile_path = path
@@ -91,6 +92,7 @@ class VirtualEnv(object):
 
     @classmethod
     def safe_import(cls, name):
+        """Helper utility for reimporting previously imported modules while inside the venv"""
         module = None
         if name not in sys.modules:
             module = importlib.import_module(name)
@@ -101,15 +103,23 @@ class VirtualEnv(object):
 
     @cached_property
     def script_basedir(self):
+        """Path to the virtualenv scripts dir"""
         script_dir = os.path.basename(sysconfig.get_paths()["scripts"])
         return script_dir
 
     @property
     def python(self):
+        """Path to the virtualenv python"""
         return self.venv_dir.joinpath(self.script_basedir).joinpath("python").as_posix()
 
     @cached_property
     def sys_path(self):
+        """The system path inside the virtualenv
+
+        :return: The :data:`sys.path` from the virtualenv
+        :rtype: list
+        """
+
         c = vistir.misc.run([self.python, "-c", "import json,sys; print(json.dumps(sys.path))"],
                             return_object=True, nospin=True)
         assert c.returncode == 0, "failed loading virtualenv path"
@@ -128,6 +138,12 @@ class VirtualEnv(object):
 
     @cached_property
     def sys_prefix(self):
+        """The prefix run inside the context of the virtualenv
+
+        :return: The python prefix inside the virtualenv
+        :rtype: :data:`sys.prefix`
+        """
+
         c = self.run_py(["-c", "'import sys; print(sys.prefix)'"])
         sys_prefix = vistir.misc.to_text(c.out).strip()
         return sys_prefix
@@ -155,10 +171,22 @@ class VirtualEnv(object):
         return pkg_resources.working_set.by_key['passa'].location
 
     def get_distributions(self):
+        """Retrives the distributions installed on the library path of the virtualenv
+
+        :return: A set of distributions found on the library path
+        :rtype: iterator
+        """
+
         pkg_resources = self.safe_import("pkg_resources")
         return pkg_resources.find_distributions(self.paths["purelib"], only=True)
 
     def get_working_set(self):
+        """Retrieve the working set of installed packages for the virtualenv.
+
+        :return: The working set for the virtualenv
+        :rtype: :class:`pkg_resources.WorkingSet`
+        """
+
         working_set = None
         import pkg_resources
         passa_entry = self.passa_entry
@@ -173,12 +201,21 @@ class VirtualEnv(object):
             return py_version
 
     def get_setup_install_args(self, pkgname, setup_py, develop=False):
+        """Get setup.py install args for installing the supplied package in the virtualenv
+
+        :param str pkgname: The name of the package to install
+        :param str setup_py: The path to the setup file of the package
+        :param bool develop: Whether the package is in development mode
+        :return: The installation arguments to pass to the interpreter when installing
+        :rtype: list
+        """
+
         headers = vistir.compat.Path(self.sys_prefix) / "include" / "site"
         headers = headers / "python{0}".format(self.python_version) / pkgname
         install_arg = "install" if not develop else "develop"
         return [
             self.python, "-u", "-c", SETUPTOOLS_SHIM % setup_py, install_arg,
-            "--single-version-externally-managed", "root={0}".format(),
+            "--single-version-externally-managed",
             "--install-headers={0}".format(headers.as_posix()),
             "--install-purelib={0}".format(self.paths["purelib"]),
             "--install-platlib={0}".format(self.paths["platlib"]),
@@ -187,6 +224,16 @@ class VirtualEnv(object):
         ]
 
     def install(self, req, editable=False, sources=[]):
+        """Install a package into the virtualenv
+
+        :param req: A requirement to install
+        :type req: :class:`requirementslib.models.requirement.Requirement`
+        :param bool editable: Whether the requirement is editable, defaults to False
+        :param list sources: A list of pip sources to consult, defaults to []
+        :return: A return code, 0 if successful
+        :rtype: int
+        """
+
         with self.activated():
             install_options = ["--prefix={0}".format(self.venv_dir),]
             passa_pip = self.safe_import("passa.internals._pip")
@@ -204,9 +251,21 @@ class VirtualEnv(object):
             hashes = req.hashes
             wheel = passa_pip.build_wheel(ireq, sources, hashes)
             wheel.install(self.paths, distlib_scripts.ScriptMaker(None, None))
+            return 0
 
     @contextlib.contextmanager
     def activated(self):
+        """A context manager which activates the virtualenv.
+
+        This context manager sets the following environment variables:
+            * `PYTHONUSERBASE`
+            * `VIRTUAL_ENV`
+            * `PYTHONIOENCODING`
+            * `PYTHONDONTWRITEBYTECODE`
+
+        In addition, it activates the virtualenv inline by calling `activate_this.py`.
+        """
+
         original_path = sys.path
         original_prefix = sys.prefix
         original_user_base = os.environ.get("PYTHONUSERBASE", None)
@@ -242,6 +301,15 @@ class VirtualEnv(object):
                 six.moves.reload_module(pkg_resources)
 
     def run(self, cmd, cwd=os.curdir):
+        """Run a command with :class:`~subprocess.Popen` in the context of the virtualenv
+
+        :param cmd: A command to run in the virtual environment
+        :type cmd: str or list
+        :param str cwd: The working directory in which to execute the command, defaults to :data:`os.curdir`
+        :return: A finished command object
+        :rtype: :class:`~subprocess.Popen`
+        """
+
         c = None
         with self.activated():
             script = vistir.cmdparse.Script.parse(cmd)
@@ -249,19 +317,41 @@ class VirtualEnv(object):
         return c
 
     def run_py(self, cmd, cwd=os.curdir):
+        """Run a python command in the virtualenv context.
+
+        :param cmd: A command to run in the virtual environment - runs with `python -c`
+        :type cmd: str or list
+        :param str cwd: The working directory in which to execute the command, defaults to :data:`os.curdir`
+        :return: A finished command object
+        :rtype: :class:`~subprocess.Popen`
+        """
+
         c = None
         if isinstance(cmd, six.string_types):
-            script = vistir.cmdparse.Script.parse("{0} {1}".format(self.python, cmd))
+            script = vistir.cmdparse.Script.parse("{0} -c '{1}'".format(self.python, cmd))
         else:
-            script = vistir.cmdparse.Script.parse([self.python,] + list(cmd))
+            script = vistir.cmdparse.Script.parse([self.python, "-c"] + list(cmd))
         with self.activated():
             c = vistir.misc.run(script._parts, return_object=True, nospin=True, cwd=cwd)
         return c
 
     def is_installed(self, pkgname):
+        """Given a package name, returns whether it is installed in the virtual environment
+
+        :param str pkgname: The name of a package
+        :return: Whether the supplied package is installed in the environment
+        :rtype: bool
+        """
+
         return any(d for d in self.get_distributions() if d.project_name == pkgname)
 
     def get_monkeypatched_pathset(self):
+        """Returns a monkeypatched `UninstallPathset` for using to uninstall packages from the virtualenv
+
+        :return: A patched `UninstallPathset` which enables uninstallation of venv packages
+        :rtype: :class:`pip._internal.req.req_uninstall.UninstallPathset`
+        """
+
         from pip_shims.shims import req_install
         req_uninstall_name = "{0}.req_uninstall".format(req_install.__package__)
         req_uninstall = self.safe_import(req_uninstall_name)
@@ -272,6 +362,17 @@ class VirtualEnv(object):
 
     @contextlib.contextmanager
     def uninstall(self, pkgname, *args, **kwargs):
+        """A context manager which allows uninstallation of packages from the virtualenv
+
+        :param str pkgname: The name of a package to uninstall
+
+        >>> venv = VirtualEnv("/path/to/venv/root")
+        >>> with venv.uninstall("pytz", auto_confirm=True, verbose=False) as uninstaller:
+                cleaned = uninstaller.paths
+        >>> if cleaned:
+                print("uninstalled packages: %s" % cleaned)
+        """
+
         auto_confirm = kwargs.pop("auto_confirm", True)
         verbose = kwargs.pop("verbose", False)
         with self.activated():
