@@ -160,7 +160,7 @@ class VirtualEnv(object):
 
         path = [
             p for p in self.get_sys_path(self.python)
-            if posixpath.normpath(p).startswith(posixpath.normpath(self.venv_dir))
+            if posixpath.normpath(p).startswith(posixpath.normpath(str(self.venv_dir)))
         ]
         return path
 
@@ -216,7 +216,8 @@ class VirtualEnv(object):
 
     @cached_property
     def passa_entry(self):
-        return self.initial_working_set.by_key['passa'].location
+        passa = self.initial_working_set.by_key['passa']
+        return getattr(passa, "location", None)
 
     def get_distributions(self):
         """Retrives the distributions installed on the library path of the virtualenv
@@ -283,7 +284,7 @@ class VirtualEnv(object):
         """
 
         with self.activated():
-            install_options = ["--prefix={0}".format(self.venv_dir),]
+            install_options = ["--prefix={0}".format(self.venv_dir.as_posix()),]
             passa_pip = self.safe_import("passa.internals._pip")
             ireq = req.as_ireq()
             if editable:
