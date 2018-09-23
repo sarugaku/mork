@@ -1,3 +1,12 @@
+0.1.2 (2018-09-23)
+==================
+
+Bug Fixes
+---------
+
+- Fixed an issue which caused failures when generating ``VirtualEnv.sys_path`` due to passing of ``posixpath`` instances to normalization methods expecting strings.  `#5 <https://github.com/sarugaku/mork/issues/5>`_
+
+
 0.1.1 (2018-09-23)
 ==================
 
