@@ -1,0 +1,1 @@
+Fixed a bug which caused ``VirtualEnv.sys_path`` to fail to populate correctly.

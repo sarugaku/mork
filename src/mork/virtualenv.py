@@ -101,6 +101,44 @@ class VirtualEnv(object):
         six.moves.reload_module(module)
         return module
 
+    @classmethod
+    def get_sys_path(cls, python_path):
+        """Get the :data:`sys.path` data for a given python executable.
+
+        :param str python_path: Path to a specific python executable.
+        :return: The system path information for that python runtime.
+        :rtype: list
+        """
+
+        command = [python_path, "-c", "import json, sys; print(json.dumps(sys.path))"]
+        c = vistir.misc.run(command, return_object=True, block=True, nospin=True)
+        assert c.returncode == 0, "failed loading virtualenv path"
+        sys_path = json.loads(c.out.strip())
+        return sys_path
+
+    @classmethod
+    def resolve_dist(cls, dist, working_set):
+        """Given a local distribution and a working set, returns all dependencies from the set.
+
+        :param dist: A single distribution to find the dependencies of
+        :type dist: :class:`pkg_resources.Distribution`
+        :param working_set: A working set to search for all packages
+        :type working_set: :class:`pkg_resources.WorkingSet`
+        :return: A set of distributions which the package depends on, including the package
+        :rtype: set(:class:`pkg_resources.Distribution`)
+        """
+
+        deps = set()
+        deps.add(dist)
+        try:
+            reqs = dist.requires()
+        except AttributeError:
+            return deps
+        for req in reqs:
+            dist = working_set.find(req)
+            deps |= cls.resolve_dist(dist, working_set)
+        return deps
+
     @cached_property
     def script_basedir(self):
         """Path to the virtualenv scripts dir"""
@@ -120,12 +158,9 @@ class VirtualEnv(object):
         :rtype: list
         """
 
-        c = vistir.misc.run([self.python, "-c", "import json,sys; print(json.dumps(sys.path))"],
-                            return_object=True, nospin=True)
-        assert c.returncode == 0, "failed loading virtualenv path"
         path = [
-            path for path in json.loads(c.out.strip())
-            if posixpath.normpath(path).startswith(posixpath.normpath(str(self.venv_dir)))
+            p for p in self.get_sys_path(self.python)
+            if posixpath.normpath(p).startswith(posixpath.normpath(self.venv_dir))
         ]
         return path
 
@@ -144,7 +179,8 @@ class VirtualEnv(object):
         :rtype: :data:`sys.prefix`
         """
 
-        c = self.run_py(["-c", "'import sys; print(sys.prefix)'"])
+        command = [self.python, "-c" "import sys; print(sys.prefix)"]
+        c = vistir.misc.run(command, return_object=True, block=True, nospin=True)
         sys_prefix = vistir.misc.to_text(c.out).strip()
         return sys_prefix
 
@@ -166,9 +202,21 @@ class VirtualEnv(object):
         return self.paths["scripts"]
 
     @cached_property
-    def passa_entry(self):
+    def initial_working_set(self):
+        sysconfig = self.safe_import("sysconfig")
         pkg_resources = self.safe_import("pkg_resources")
-        return pkg_resources.working_set.by_key['passa'].location
+        base = sysconfig.get_config_var("prefix")
+        base_path = sysconfig._INSTALL_SCHEMES[sysconfig._get_default_scheme()]["scripts"]
+        system_python = posixpath.join(
+            base_path.format(base=base), "python"
+        )
+        system_path = self.get_sys_path(system_python)
+        working_set = pkg_resources.WorkingSet(system_path)
+        return working_set
+
+    @cached_property
+    def passa_entry(self):
+        return self.initial_working_set.by_key['passa'].location
 
     def get_distributions(self):
         """Retrives the distributions installed on the library path of the virtualenv
@@ -254,8 +302,10 @@ class VirtualEnv(object):
             return 0
 
     @contextlib.contextmanager
-    def activated(self):
+    def activated(self, extra_dists=[]):
         """A context manager which activates the virtualenv.
+
+        :param list extra_dists: Paths added to the context after the virtualenv is activated.
 
         This context manager sets the following environment variables:
             * `PYTHONUSERBASE`
@@ -281,9 +331,12 @@ class VirtualEnv(object):
             os.environ["PYTHONUSERBASE"] = vistir.compat.fs_str(self.venv_dir.as_posix())
             os.environ["VIRTUAL_ENV"] = vistir.compat.fs_str(self.venv_dir.as_posix())
             sys.path = self.sys_path
-            sys.prefix = self.venv_dir
+            sys.prefix = self.sys_prefix
             site = self.safe_import("site")
             site.addsitedir(passa_path)
+            for extra_dist in extra_dists:
+                if extra_dist not in self.get_working_set():
+                    extra_dist.activate(self.sys_path)
             sys.modules["recursive_monkey_patch"] = self.recursive_monkey_patch
             pkg_resources = self.safe_import("pkg_resources")
             try:
