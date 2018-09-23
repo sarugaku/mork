@@ -1,0 +1,1 @@
+Fixed an issue which caused failures when generating ``VirtualEnv.sys_path`` due to passing of ``posixpath`` instances to normalization methods expecting strings.
