@@ -24,6 +24,8 @@ class VirtualEnv(object):
         pkg_resources = self.safe_import("pkg_resources")
         sys_module = self.safe_import("sys")
         self.base_working_set = pkg_resources.WorkingSet(sys_module.path)
+        own_dist = pkg_resources.get_distribution(pkg_resources.Requirement("mork"))
+        self.extra_dists = self.resolve_dist(own_dist, self.base_working_set)
         try:
             self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
         except ImportError:
@@ -60,6 +62,8 @@ class VirtualEnv(object):
     def normalize_path(cls, path):
         if not path:
             return
+        if isinstance(path, six.string_types):
+            path = vistir.compat.Path(path)
         if not path.is_absolute():
             try:
                 path = path.resolve()
@@ -203,6 +207,10 @@ class VirtualEnv(object):
             scheme, _, _ = sysconfig._get_default_scheme().partition('_')
             scheme = "{0}_user".format(scheme)
             paths = sysconfig.get_paths(scheme=scheme)
+        if "prefix" not in paths:
+            paths["prefix"] = self.venv_dir.as_posix()
+        if "headers" not in paths:
+            paths["headers"] = paths["include"]
         return paths
 
     @property
@@ -317,7 +325,7 @@ class VirtualEnv(object):
                     vistir.path.create_tracked_tempdir(prefix="passabuild")
                 )
             )
-            built = packagebuilder.build(ireq, sources, cache_dir)
+            built = packagebuilder.build.build(ireq, sources, cache_dir)
             if isinstance(built, distlib.wheel.Wheel):
                 built.install(self.paths, distlib_scripts.ScriptMaker(None, None))
             else:
@@ -363,6 +371,7 @@ class VirtualEnv(object):
             sys.prefix = self.sys_prefix
             site = self.safe_import("site")
             site.addsitedir(parent_path)
+            extra_dists = list(self.extra_dists) + extra_dists
             for extra_dist in extra_dists:
                 if extra_dist not in self.get_working_set():
                     extra_dist.activate(self.sys_path)
@@ -410,7 +419,7 @@ class VirtualEnv(object):
 
         c = None
         if isinstance(cmd, six.string_types):
-            script = vistir.cmdparse.Script.parse("{0} -c '{1}'".format(self.python, cmd))
+            script = vistir.cmdparse.Script.parse("{0} -c {1}".format(self.python, cmd))
         else:
             script = vistir.cmdparse.Script.parse([self.python, "-c"] + list(cmd))
         with self.activated():

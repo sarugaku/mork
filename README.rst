@@ -30,6 +30,8 @@ Summary
 Mork_ is a library designed for installing and querying python packages inside virtual
 environments.
 
+.. _Mork: https://mork.readthedocs.io/en/latest/
+
 
 🐉 See What's Installed
 -----------------------
