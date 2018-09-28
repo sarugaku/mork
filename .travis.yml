@@ -6,6 +6,10 @@ dist: trusty
 matrix:
   fast_finish: true
 
+env:
+  - PIP_EXISTS_ACTION=w
+  - PIP_NO_INPUT=1
+
 install:
   - "python -m pip install --upgrade pip pytest-timeout"
   - "python -m pip install -e .[tests]"
