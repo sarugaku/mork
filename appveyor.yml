@@ -1,4 +1,6 @@
 environment:
+  PIP_EXISTS_ACTION: "w"
+  PIP_NO_INPUT: "1"
   matrix:
     # Unit and integration tests.
     - PYTHON: "C:\\Python27"

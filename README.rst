@@ -11,7 +11,7 @@ mork: A project for installing packages across the virtualenv boundary.
 .. image:: https://api.travis-ci.com/sarugaku/mork.svg?branch=master
     :target: https://travis-ci.com/sarugaku/mork
 
-.. image:: https://ci.appveyor.com/api/projects/status/y9kpdaqy4di5nhyk/branch/master?svg=true
+.. image:: https://ci.appveyor.com/api/projects/status/5mo40rneihk6y8po/branch/master?svg=true
     :target: https://ci.appveyor.com/project/sarugaku/mork
 
 .. image:: https://img.shields.io/pypi/pyversions/mork.svg
