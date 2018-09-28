@@ -5,12 +5,14 @@ import contextlib
 import hashlib
 import importlib
 import json
-import posixpath
 import os
+import posixpath
 import re
-import six
 import sys
 import sysconfig
+
+import distlib.wheel.Wheel
+import six
 
 from cached_property import cached_property
 
@@ -19,7 +21,13 @@ import vistir
 
 class VirtualEnv(object):
     def __init__(self, venv_dir):
-        self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
+        pkg_resources = self.safe_import("pkg_resources")
+        sys_module = self.safe_import("sys")
+        self.base_working_set = pkg_resources.WorkingSet(sys_module.path)
+        try:
+            self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
+        except ImportError:
+            self.recursive_monkey_patch = None
         self.venv_dir = vistir.compat.Path(venv_dir)
 
     @classmethod
@@ -214,11 +222,6 @@ class VirtualEnv(object):
         working_set = pkg_resources.WorkingSet(system_path)
         return working_set
 
-    @cached_property
-    def passa_entry(self):
-        passa = self.initial_working_set.by_key['passa']
-        return getattr(passa, "location", None)
-
     def get_distributions(self):
         """Retrives the distributions installed on the library path of the virtualenv
 
@@ -238,8 +241,7 @@ class VirtualEnv(object):
 
         working_set = None
         import pkg_resources
-        passa_entry = self.passa_entry
-        working_set = pkg_resources.WorkingSet(self.sys_path + [passa_entry])
+        working_set = pkg_resources.WorkingSet(self.sys_path)
         return working_set
 
     @cached_property
@@ -272,6 +274,22 @@ class VirtualEnv(object):
             "--install-data={0}".format(self.paths["data"]),
         ]
 
+    def setuptools_install(self, chdir_to, pkg_name, setup_py_path=None, editable=False):
+        """Install an sdist or an editable package into the virtualenv
+
+        :param str chdir_to: The location to change to
+        :param str setup_py_path: The path to the setup.py, if applicable defaults to None
+        :param  bool editable: Whether the package is editable, defaults to False
+        """
+
+        install_options = ["--prefix={0}".format(self.venv_dir.as_posix()),]
+        with vistir.contextmanagers.cd(chdir_to):
+            c = self.run(
+                self.get_setup_install_args(pkg_name, setup_py_path, develop=editable) +
+                install_options, cwd=chdir_to
+            )
+            return c.returncode
+
     def install(self, req, editable=False, sources=[]):
         """Install a package into the virtualenv
 
@@ -284,22 +302,32 @@ class VirtualEnv(object):
         """
 
         with self.activated():
-            install_options = ["--prefix={0}".format(self.venv_dir.as_posix()),]
-            passa_pip = self.safe_import("passa.internals._pip")
+            try:
+                packagebuilder = self.safe_import("packagebuilder")
+            except ImportError:
+                packagebuilder = None
+            if not packagebuilder:
+                return 2
             ireq = req.as_ireq()
-            if editable:
-                with vistir.contextmanagers.cd(ireq.setup_py_dir, ireq.setup_py):
-                    c = self.run(
-                        install_options + self.get_setup_install_args(
-                            req.name, develop=editable
-                        ), cwd=ireq.setup_py_dir
-                    )
-                    return c.returncode
             distlib_scripts = self.safe_import("distlib.scripts")
             sources = self.filter_sources(req, sources)
-            hashes = req.hashes
-            wheel = passa_pip.build_wheel(ireq, sources, hashes)
-            wheel.install(self.paths, distlib_scripts.ScriptMaker(None, None))
+            cache_dir = os.environ.get('PASSA_CACHE_DIR',
+                os.environ.get(
+                    'PIPENV_CACHE_DIR',
+                    vistir.path.create_tracked_tempdir(prefix="passabuild")
+                )
+            )
+            built = packagebuilder.build(ireq, sources, cache_dir)
+            if isinstance(built, distlib.wheel.Wheel):
+                built.install(self.paths, distlib_scripts.ScriptMaker(None, None))
+            else:
+                path = vistir.compat.Path(built.path)
+                cd_path = path.parent
+                setup_py = cd_path.joinpath("setup.py")
+                return self.setuptools_install(
+                    cd_path.as_posix(), req.name, setup_py.as_posix(),
+                    editable=req.editable
+                )
             return 0
 
     @contextlib.contextmanager
@@ -321,7 +349,7 @@ class VirtualEnv(object):
         original_prefix = sys.prefix
         original_user_base = os.environ.get("PYTHONUSERBASE", None)
         original_venv = os.environ.get("VIRTUAL_ENV", None)
-        passa_path = vistir.compat.Path(__file__).absolute().parent.parent.as_posix()
+        parent_path = vistir.compat.Path(__file__).absolute().parent.parent.as_posix()
         with vistir.contextmanagers.temp_environ(), vistir.contextmanagers.temp_path():
             os.environ["PYTHONIOENCODING"] = vistir.compat.fs_str("utf-8")
             os.environ["PYTHONDONTWRITEBYTECODE"] = vistir.compat.fs_str("1")
@@ -334,7 +362,7 @@ class VirtualEnv(object):
             sys.path = self.sys_path
             sys.prefix = self.sys_prefix
             site = self.safe_import("site")
-            site.addsitedir(passa_path)
+            site.addsitedir(parent_path)
             for extra_dist in extra_dists:
                 if extra_dist not in self.get_working_set():
                     extra_dist.activate(self.sys_path)
