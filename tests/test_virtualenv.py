@@ -27,6 +27,8 @@ def test_workon_home(tmpdir):
 def test_normpath(input_path, normalized, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(vistir.compat.Path, "is_absolute", lambda x: True)
+        if os.name == "nt":
+            normalized = normalized.replace("/", "\\")
         m.setattr(os, "name", "nt")
         import importlib
         pathlib = importlib.import_module(vistir.compat.Path.__module__)
@@ -64,7 +66,7 @@ def test_properties(tmpvenv):
     script_basedir = "Scripts" if os.name == "nt" else "bin"
     assert script_basedir == tmpvenv.script_basedir
     scripts_dir = tmpvenv.venv_dir.joinpath(script_basedir).as_posix()
-    assert scripts_dir == tmpvenv.scripts_dir
+    assert scripts_dir == vistir.compat.Path(tmpvenv.scripts_dir).as_posix()
     python = "{0}/python".format(tmpvenv.venv_dir.joinpath(script_basedir).as_posix())
     assert python == tmpvenv.python
     assert any(
@@ -86,7 +88,7 @@ def test_install(tmpvenv):
     assert "requests" in [dist.project_name for dist in venv_workingset]
     with tmpvenv.activated():
         tmp_requests = tmpvenv.safe_import("requests")
-        requests_path = tmp_requests.__path__[0]
+        requests_path = vistir.compat.Path(tmp_requests.__path__[0]).as_posix()
         assert requests_path.startswith(tmpvenv.venv_dir.as_posix())
 
 

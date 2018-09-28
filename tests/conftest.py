@@ -10,7 +10,8 @@ import vistir
 def virtualenv(tmpdir_factory):
     venv_dir = tmpdir_factory.mktemp("passa-testenv")
     print("Creating virtualenv {0!r}".format(venv_dir.strpath))
-    c = vistir.misc.run([sys.executable, "-m", "virtualenv", venv_dir.strpath],
+    venv_path = vistir.compat.Path(venv_dir.strpath).as_posix()
+    c = vistir.misc.run([sys.executable, "-m", "virtualenv", venv_path],
                             return_object=True, block=True, nospin=True)
     if c.returncode == 0:
         print("Virtualenv created...")
@@ -20,4 +21,5 @@ def virtualenv(tmpdir_factory):
 
 @pytest.fixture
 def tmpvenv(virtualenv):
-    return mork.virtualenv.VirtualEnv(virtualenv.strpath)
+    venv_path = vistir.compat.Path(virtualenv.strpath).as_posix()
+    return mork.virtualenv.VirtualEnv(venv_path)
