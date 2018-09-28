@@ -1,1 +1,0 @@
-Fixed an issue which caused errors on python versions 2.7-3.6 when attempting to uninstall packages in the virtualenv due to failed import attempts when using ``pip-shims.req_install``.

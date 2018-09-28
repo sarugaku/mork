@@ -1,1 +1,0 @@
-Removed references to and attempted imports of ``passa`` builder and installer functionality from ``VirtualEnv`` implementation in favor of ``packagebuilder`` and ``installer``.
