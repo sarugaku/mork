@@ -1,0 +1,1 @@
+``VirtualEnv`` instances will now create a reference to the outer ``pkg_resources.WorkingSet`` at instantiation and store it in ``VirtualEnv.base_working_set``.
