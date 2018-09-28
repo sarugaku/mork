@@ -11,7 +11,7 @@ import re
 import sys
 import sysconfig
 
-import distlib.wheel.Wheel
+import distlib.wheel
 import six
 
 from cached_property import cached_property
@@ -434,9 +434,12 @@ class VirtualEnv(object):
         :rtype: :class:`pip._internal.req.req_uninstall.UninstallPathset`
         """
 
-        from pip_shims.shims import req_install
-        req_uninstall_name = "{0}.req_uninstall".format(req_install.__package__)
-        req_uninstall = self.safe_import(req_uninstall_name)
+        from pip_shims.shims import InstallRequirement
+        # Determine the path to the uninstall module name based on the install module name
+        uninstall_path = InstallRequirement.__module__.replace(
+            "req_install", "req_uninstall"
+        )
+        req_uninstall = self.safe_import(uninstall_path)
         self.recursive_monkey_patch.monkey_patch(
             PatchedUninstaller, req_uninstall.UninstallPathSet
         )
