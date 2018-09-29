@@ -1,3 +1,12 @@
+0.1.4 (2018-09-29)
+==================
+
+Bug Fixes
+---------
+
+- Fixed a bug with path locations which caused cross platform virtualenv operations to fail on windows.  `#11 <https://github.com/sarugaku/mork/issues/11>`_
+
+
 0.1.3 (2018-09-28)
 ==================
 
