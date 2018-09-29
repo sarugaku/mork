@@ -27,7 +27,7 @@ class VirtualEnv(object):
         self.base_working_set = pkg_resources.WorkingSet(sys_module.path)
         own_dist = pkg_resources.get_distribution(pkg_resources.Requirement("mork"))
         self.extra_dists = self.resolve_dist(own_dist, self.base_working_set)
-        self._modules = {}
+        self._modules = {'pkg_resources': pkg_resources}
         try:
             self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
         except ImportError:
@@ -158,7 +158,7 @@ class VirtualEnv(object):
         include_dir = self.venv_dir / "include"
         python_path = next(iter(list(include_dir.iterdir())), None)
         if python_path and python_path.name.startswith("python"):
-            python_version = python_path.replace("python", "")
+            python_version = python_path.name.replace("python", "")
             python_version = python_version.replace(".", "")
             py_version_short, abiflags = python_version[:2], python_version[2:]
             return {"py_version_short": py_version_short, "abiflags": abiflags}
