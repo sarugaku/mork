@@ -174,9 +174,9 @@ class VirtualEnv(object):
         config = {
             "base": prefix,
             "installed_base": prefix,
+            "platbase": prefix,
+            "installed_platbase": prefix
         }
-        if os.name != "nt":
-            config["installed_platbase"] = sysconfig.get_config_var("installed_platbase")
         config.update(self.pyversion)
         paths = {
             k: v.format(**config)
