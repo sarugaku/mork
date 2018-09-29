@@ -15,8 +15,8 @@ environment:
 install:
   - "SET PATH=%PYTHON%;%PYTHON%\\Scripts;%PATH%"
   - "python --version"
-  - "python -m pip install --upgrade pip"
-  - "python -m pip install -e .[tests]"
+  - "python -m pip install --upgrade pip setuptools pytest-timeout pytest-xdist"
+  - "python -m pip install -e .[tests,virtualenv]"
 
 build: off
 

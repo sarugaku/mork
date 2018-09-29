@@ -1,0 +1,1 @@
+Fixed a bug with path locations which caused cross platform virtualenv operations to fail on windows.

@@ -42,8 +42,7 @@ def test_normpath(input_path, normalized, monkeypatch):
 
 
 def test_get_dists(tmpvenv):
-    dists = tmpvenv.get_distributions()
-    dist_names = [dist.project_name for dist in dists]
+    dist_names = [dist.project_name for dist in tmpvenv.get_distributions()]
     assert all(pkg in dist_names for pkg in ['setuptools', 'pip', 'wheel']), dist_names
 
 
@@ -69,27 +68,34 @@ def test_properties(tmpvenv):
     assert scripts_dir == vistir.compat.Path(tmpvenv.scripts_dir).as_posix()
     python = "{0}/python".format(tmpvenv.venv_dir.joinpath(script_basedir).as_posix())
     assert python == tmpvenv.python
+    libdir = "Lib" if os.name == "nt" else "lib"
+    libdir = tmpvenv.venv_dir.joinpath(libdir).as_posix().lower()
     assert any(
-        pth.startswith(tmpvenv.venv_dir.joinpath("lib").as_posix())
+        vistir.compat.Path(pth).as_posix().lower().startswith(libdir)
         for pth in tmpvenv.sys_path
-    )
+    ),  list(tmpvenv.sys_path)
     assert tmpvenv.sys_prefix == tmpvenv.venv_dir.as_posix()
 
 
 def test_install(tmpvenv):
     import requirementslib
     requests = requirementslib.Requirement.from_line("requests")
+    pytz = requirementslib.Requirement.from_line("pytz")
     retcode = tmpvenv.install(requests)
     assert retcode == 0
+    retcode = tmpvenv.install(pytz)
+    assert retcode == 0
     assert tmpvenv.is_installed("requests")
+    assert tmpvenv.is_installed("pytz")
     venv_dists = [dist for dist in tmpvenv.get_distributions()]
     venv_workingset = [dist for dist in tmpvenv.get_working_set()]
-    assert "requests" in [dist.project_name for dist in venv_dists]
-    assert "requests" in [dist.project_name for dist in venv_workingset]
+    expected = ["requests", "pytz"]
+    assert all(pkg in [dist.project_name for dist in venv_dists] for pkg in expected)
+    assert all(pkg in [dist.project_name for dist in venv_workingset] for pkg in expected)
     with tmpvenv.activated():
-        tmp_requests = tmpvenv.safe_import("requests")
-        requests_path = vistir.compat.Path(tmp_requests.__path__[0]).as_posix()
-        assert requests_path.startswith(tmpvenv.venv_dir.as_posix())
+        tmp_pytz = tmpvenv.safe_import("pytz")
+        pytz_path = vistir.compat.Path(tmp_pytz.__path__[0]).as_posix()
+        assert pytz_path.startswith(tmpvenv.venv_dir.as_posix()), pytz_path
 
 
 def test_uninstall(tmpvenv):
@@ -109,9 +115,13 @@ def test_uninstall(tmpvenv):
         dist for dist in tmpvenv.get_distributions()
         if dist.project_name == "requests"), None
     )
-    requests_deps = tmpvenv.resolve_dist(requests_dist, tmpvenv.get_working_set())
+    requests_deps = [
+        dist for dist in tmpvenv.resolve_dist(requests_dist, tmpvenv.get_working_set())
+        if dist is not None
+    ]
     uninstalled_packages = []
     for dep in requests_deps:
-        uninstalled_packages.extend(uninstall(dep.project_name))
+        uninstalled = uninstall(dep.project_name)
+        uninstalled_packages.extend(uninstalled)
     assert uninstalled_packages
     assert all(pkg.project_name in uninstalled_packages for pkg in requests_deps)
