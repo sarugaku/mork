@@ -42,8 +42,7 @@ def test_normpath(input_path, normalized, monkeypatch):
 
 
 def test_get_dists(tmpvenv):
-    dists = tmpvenv.get_distributions()
-    dist_names = [dist.project_name for dist in dists]
+    dist_names = [dist.project_name for dist in tmpvenv.get_distributions()]
     assert all(pkg in dist_names for pkg in ['setuptools', 'pip', 'wheel']), dist_names
 
 
