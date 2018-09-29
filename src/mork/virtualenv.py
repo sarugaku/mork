@@ -11,6 +11,7 @@ import re
 import sys
 import sysconfig
 
+import distlib.scripts
 import distlib.wheel
 import six
 
@@ -26,6 +27,7 @@ class VirtualEnv(object):
         self.base_working_set = pkg_resources.WorkingSet(sys_module.path)
         own_dist = pkg_resources.get_distribution(pkg_resources.Requirement("mork"))
         self.extra_dists = self.resolve_dist(own_dist, self.base_working_set)
+        self._modules = {}
         try:
             self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
         except ImportError:
@@ -151,6 +153,39 @@ class VirtualEnv(object):
             deps |= cls.resolve_dist(dist, working_set)
         return deps
 
+    @property
+    def pyversion(self):
+        include_dir = self.venv_dir / "include"
+        python_path = next(iter(list(include_dir.iterdir())), None)
+        if python_path and python_path.name.startswith("python"):
+            python_version = python_path.replace("python", "")
+            python_version = python_version.replace(".", "")
+            py_version_short, abiflags = python_version[:2], python_version[2:]
+            return {"py_version_short": py_version_short, "abiflags": abiflags}
+        return {}
+
+    @cached_property
+    def base_paths(self):
+        if "sysconfig" not in self._modules:
+            self._modules["sysconfig"] = self.safe_import("sysconfig")
+        sysconfig = self._modules["sysconfig"]
+        prefix = self.venv_dir.as_posix()
+        scheme = sysconfig._get_default_scheme()
+        config = {
+            "base": prefix,
+            "installed_base": prefix,
+        }
+        if os.name != "nt":
+            config["installed_platbase"] = sysconfig.get_config_var("installed_platbase")
+        config.update(self.pyversion)
+        paths = {
+            k: v.format(**config)
+            for k, v in sysconfig._INSTALL_SCHEMES[scheme].items()
+        }
+        if "prefix" not in paths:
+            paths["prefix"] = prefix
+        return paths
+
     @cached_property
     def script_basedir(self):
         """Path to the virtualenv scripts dir"""
@@ -193,7 +228,7 @@ class VirtualEnv(object):
 
         command = [self.python, "-c" "import sys; print(sys.prefix)"]
         c = vistir.misc.run(command, return_object=True, block=True, nospin=True)
-        sys_prefix = vistir.misc.to_text(c.out).strip()
+        sys_prefix = vistir.compat.Path(vistir.misc.to_text(c.out).strip()).as_posix()
         return sys_prefix
 
     @cached_property
@@ -204,18 +239,22 @@ class VirtualEnv(object):
             os.environ["PYTHONIOENCODING"] = vistir.compat.fs_str("utf-8")
             os.environ["PYTHONDONTWRITEBYTECODE"] = vistir.compat.fs_str("1")
             sysconfig = self.safe_import("sysconfig")
-            scheme, _, _ = sysconfig._get_default_scheme().partition('_')
-            scheme = "{0}_user".format(scheme)
-            paths = sysconfig.get_paths(scheme=scheme)
-        if "prefix" not in paths:
-            paths["prefix"] = self.venv_dir.as_posix()
-        if "headers" not in paths:
-            paths["headers"] = paths["include"]
+            self._modules["sysconfig"] = sysconfig
+            paths = self.base_paths
+            if "headers" not in paths:
+                paths["headers"] = paths["include"]
         return paths
 
     @property
     def scripts_dir(self):
         return self.paths["scripts"]
+
+    @property
+    def libdir(self):
+        purelib = self.paths.get("purelib", None)
+        if purelib and os.path.exists(purelib):
+            return "purelib", purelib
+        return "platlib", self.paths["platlib"]
 
     @cached_property
     def initial_working_set(self):
@@ -269,13 +308,13 @@ class VirtualEnv(object):
         :rtype: list
         """
 
-        headers = vistir.compat.Path(self.sys_prefix) / "include" / "site"
+        headers = self.paths["headers"]
         headers = headers / "python{0}".format(self.python_version) / pkgname
         install_arg = "install" if not develop else "develop"
         return [
             self.python, "-u", "-c", SETUPTOOLS_SHIM % setup_py, install_arg,
             "--single-version-externally-managed",
-            "--install-headers={0}".format(headers.as_posix()),
+            "--install-headers={0}".format(self.paths["headers"]),
             "--install-purelib={0}".format(self.paths["purelib"]),
             "--install-platlib={0}".format(self.paths["platlib"]),
             "--install-scripts={0}".format(self.scripts_dir),
@@ -309,15 +348,14 @@ class VirtualEnv(object):
         :rtype: int
         """
 
-        with self.activated():
-            try:
-                packagebuilder = self.safe_import("packagebuilder")
-            except ImportError:
-                packagebuilder = None
+        try:
+            packagebuilder = self.safe_import("packagebuilder")
+        except ImportError:
+            packagebuilder = None
+        with self.activated(include_extras=False):
             if not packagebuilder:
                 return 2
             ireq = req.as_ireq()
-            distlib_scripts = self.safe_import("distlib.scripts")
             sources = self.filter_sources(req, sources)
             cache_dir = os.environ.get('PASSA_CACHE_DIR',
                 os.environ.get(
@@ -327,7 +365,8 @@ class VirtualEnv(object):
             )
             built = packagebuilder.build.build(ireq, sources, cache_dir)
             if isinstance(built, distlib.wheel.Wheel):
-                built.install(self.paths, distlib_scripts.ScriptMaker(None, None))
+                maker = distlib.scripts.ScriptMaker(None, None)
+                built.install(self.paths, maker)
             else:
                 path = vistir.compat.Path(built.path)
                 cd_path = path.parent
@@ -339,7 +378,7 @@ class VirtualEnv(object):
             return 0
 
     @contextlib.contextmanager
-    def activated(self, extra_dists=[]):
+    def activated(self, include_extras=True, extra_dists=[]):
         """A context manager which activates the virtualenv.
 
         :param list extra_dists: Paths added to the context after the virtualenv is activated.
@@ -369,14 +408,15 @@ class VirtualEnv(object):
             os.environ["VIRTUAL_ENV"] = vistir.compat.fs_str(self.venv_dir.as_posix())
             sys.path = self.sys_path
             sys.prefix = self.sys_prefix
-            site = self.safe_import("site")
-            site.addsitedir(parent_path)
-            extra_dists = list(self.extra_dists) + extra_dists
-            for extra_dist in extra_dists:
-                if extra_dist not in self.get_working_set():
-                    extra_dist.activate(self.sys_path)
-            sys.modules["recursive_monkey_patch"] = self.recursive_monkey_patch
             pkg_resources = self.safe_import("pkg_resources")
+            if include_extras:
+                site = self.safe_import("site")
+                site.addsitedir(parent_path)
+                extra_dists = list(self.extra_dists) + extra_dists
+                for extra_dist in extra_dists:
+                    if extra_dist not in self.get_working_set():
+                        extra_dist.activate(self.sys_path)
+                sys.modules["recursive_monkey_patch"] = self.recursive_monkey_patch
             try:
                 yield
             finally:
