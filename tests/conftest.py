@@ -2,6 +2,7 @@
 
 import pytest
 import mork
+import os
 import sys
 import vistir
 
@@ -20,6 +21,10 @@ def virtualenv(tmpdir_factory):
 
 
 @pytest.fixture
-def tmpvenv(virtualenv):
+def tmpvenv(virtualenv, tmpdir):
     venv_path = vistir.compat.Path(virtualenv.strpath).as_posix()
-    return mork.virtualenv.VirtualEnv(venv_path)
+    with vistir.contextmanagers.temp_environ():
+        os.environ["PACKAGEBUILDER_CACHE_DIR"] = tmpdir.strpath
+        yield mork.virtualenv.VirtualEnv(venv_path)
+    if "PACKAGEBUILDER_CACHE_DIR" in os.environ:
+        del os.environ["PACKAGEBUILDER_CACHE_DIR"]
