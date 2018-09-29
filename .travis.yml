@@ -11,7 +11,7 @@ env:
     PIP_NO_INPUT=1
 
 install:
-  - "python -m pip install --upgrade pip pytest-timeout"
+  - "python -m pip install --upgrade pip pytest-timeout setuptools"
   - "python -m pip install -e .[tests]"
 script:
   - "python -m pytest -v -n 8 tests/"
@@ -35,7 +35,7 @@ jobs:
     - stage: coverage
       python: "3.6"
       install:
-        - "python -m pip install --upgrade pip pytest-timeout pytest-cov"
+        - "python -m pip install --upgrade pip setuptools pytest-timeout pytest-cov"
         - "python -m pip install --upgrade -e .[tests]"
       script:
         - "python -m pytest -n auto --timeout 300 --cov=mork --cov-report=term-missing --cov-report=xml --cov-report=html tests"
