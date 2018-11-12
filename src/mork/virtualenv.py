@@ -6,33 +6,41 @@ import hashlib
 import importlib
 import json
 import os
-import posixpath
 import re
+import site
 import sys
-import sysconfig
 
-import distlib.scripts
-import distlib.wheel
+from distutils.sysconfig import get_python_lib
+from sysconfig import get_paths
+
+import pkg_resources
 import six
 
 from cached_property import cached_property
 
+import distlib.scripts
+import distlib.wheel
 import vistir
 
 
 class VirtualEnv(object):
-    def __init__(self, venv_dir):
-        pkg_resources = self.safe_import("pkg_resources")
+    def __init__(self, prefix=None, base_working_set=None, is_venv=True):
+        pkgresources = self.safe_import("pkg_resources")
         sys_module = self.safe_import("sys")
-        self.base_working_set = pkg_resources.WorkingSet(sys_module.path)
-        own_dist = pkg_resources.get_distribution(pkg_resources.Requirement("mork"))
-        self.extra_dists = self.resolve_dist(own_dist, self.base_working_set)
-        self._modules = {'pkg_resources': pkg_resources}
-        try:
-            self.recursive_monkey_patch = self.safe_import("recursive_monkey_patch")
-        except ImportError:
-            self.recursive_monkey_patch = None
-        self.venv_dir = vistir.compat.Path(venv_dir)
+        own_dist = pkgresources.get_distribution(pkgresources.Requirement("mork"))
+        _working_set = pkgresources.WorkingSet(sys_module.path)
+        if base_working_set is None:
+            base_working_set = _working_set
+        self.own_dist = own_dist
+        self.base_working_set = base_working_set
+        self.is_venv = is_venv
+        self.system_python = sys.executable
+        self.real_prefix = getattr(sys, "real_prefix", sys.prefix)
+        self._modules = {'pkg_resources': pkgresources, 'mork': own_dist}
+        self.extra_dists = []
+        prefix = prefix if prefix else sys_module.prefix
+        self.prefix = vistir.compat.Path(prefix)
+        super(VirtualEnv, self).__init__()
 
     @classmethod
     def from_project_path(cls, path):
@@ -104,15 +112,26 @@ class VirtualEnv(object):
         ]
         return filtered_sources or sources
 
-    @classmethod
-    def safe_import(cls, name):
+    def safe_import(self, name):
         """Helper utility for reimporting previously imported modules while inside the venv"""
         module = None
-        if name not in sys.modules:
+        if name not in self._modules:
+            self._modules[name] = importlib.import_module(name)
+        module = self._modules[name]
+        if not module:
+            dist = next(iter(
+                dist for dist in self.base_working_set if dist.project_name == name
+            ), None)
+            if dist:
+                dist.activate()
             module = importlib.import_module(name)
-        else:
-            module = sys.modules[name]
-        six.moves.reload_module(module)
+        if name in sys.modules:
+            try:
+                six.moves.reload_module(module)
+                six.moves.reload_module(sys.modules[name])
+            except TypeError:
+                del sys.modules[name]
+                sys.modules[name] = self._modules[name]
         return module
 
     @classmethod
@@ -153,9 +172,16 @@ class VirtualEnv(object):
             deps |= cls.resolve_dist(dist, working_set)
         return deps
 
+    def add_dist(self, dist_name):
+        pkg_resources = self.safe_import("pkg_resources")
+        dist = pkg_resources.get_distribution(pkg_resources.Requirement(dist_name))
+        extras = self.resolve_dist(dist, self.base_working_set)
+        if extras:
+            self.extra_dists.extend(extras)
+
     @property
     def pyversion(self):
-        include_dir = self.venv_dir / "include"
+        include_dir = self.prefix / "include"
         python_path = next(iter(list(include_dir.iterdir())), None)
         if python_path and python_path.name.startswith("python"):
             python_version = python_path.name.replace("python", "")
@@ -165,63 +191,99 @@ class VirtualEnv(object):
 
     @cached_property
     def base_paths(self):
-        if "sysconfig" not in self._modules:
-            self._modules["sysconfig"] = self.safe_import("sysconfig")
-        sysconfig = self._modules["sysconfig"]
-        prefix = self.venv_dir.as_posix()
-        scheme = sysconfig._get_default_scheme()
-        config = {
-            "base": prefix,
-            "installed_base": prefix,
-            "platbase": prefix,
-            "installed_platbase": prefix
-        }
-        config.update(self.pyversion)
-        paths = {
-            k: v.format(**config)
-            for k, v in sysconfig._INSTALL_SCHEMES[scheme].items()
-        }
+        """
+        Returns the context appropriate paths for the environment.
+
+        :return: A dictionary of environment specific paths to be used for installation operations
+        :rtype: dict
+
+        .. note:: The implementation of this is borrowed from a combination of pip and
+           virtualenv and is likely to change at some point in the future.
+
+        >>> from pipenv.core import project
+        >>> from pipenv.environment import Environment
+        >>> env = Environment(prefix=project.virtualenv_location, is_venv=True, sources=project.sources)
+        >>> import pprint
+        >>> pprint.pprint(env.base_paths)
+        {'PATH': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/bin::/bin:/usr/bin',
+        'PYTHONPATH': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/lib/python3.7/site-packages',
+        'data': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW',
+        'include': '/home/hawk/.pyenv/versions/3.7.1/include/python3.7m',
+        'libdir': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/lib/python3.7/site-packages',
+        'platinclude': '/home/hawk/.pyenv/versions/3.7.1/include/python3.7m',
+        'platlib': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/lib/python3.7/site-packages',
+        'platstdlib': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/lib/python3.7',
+        'prefix': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW',
+        'purelib': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/lib/python3.7/site-packages',
+        'scripts': '/home/hawk/.virtualenvs/pipenv-MfOPs1lW/bin',
+        'stdlib': '/home/hawk/.pyenv/versions/3.7.1/lib/python3.7'}
+        """
+
+        prefix = self.prefix.as_posix()
+        install_scheme = 'nt' if (os.name == 'nt') else 'posix_prefix'
+        paths = get_paths(install_scheme, vars={
+            'base': prefix,
+            'platbase': prefix,
+        })
+        paths["PATH"] = paths["scripts"] + os.pathsep + os.defpath
         if "prefix" not in paths:
             paths["prefix"] = prefix
+        purelib = get_python_lib(plat_specific=0, prefix=prefix)
+        platlib = get_python_lib(plat_specific=1, prefix=prefix)
+        if purelib == platlib:
+            lib_dirs = purelib
+        else:
+            lib_dirs = purelib + os.pathsep + platlib
+        paths["libdir"] = purelib
+        paths["purelib"] = purelib
+        paths["platlib"] = platlib
+        paths['PYTHONPATH'] = lib_dirs
+        paths["libdirs"] = lib_dirs
         return paths
 
     @cached_property
     def script_basedir(self):
-        """Path to the virtualenv scripts dir"""
-        script_dir = os.path.basename(sysconfig.get_paths()["scripts"])
+        """Path to the environment scripts dir"""
+        script_dir = self.base_paths["scripts"]
         return script_dir
 
     @property
     def python(self):
-        """Path to the virtualenv python"""
-        return self.venv_dir.joinpath(self.script_basedir).joinpath("python").as_posix()
+        """Path to the environment python"""
+        py = vistir.compat.Path(self.base_paths["scripts"]).joinpath("python").as_posix()
+        if not py:
+            return vistir.compat.Path(sys.executable).as_posix()
+        return py
 
     @cached_property
     def sys_path(self):
-        """The system path inside the virtualenv
+        """The system path inside the environment
 
-        :return: The :data:`sys.path` from the virtualenv
+        :return: The :data:`sys.path` from the environment
         :rtype: list
         """
 
-        path = [
-            p for p in self.get_sys_path(self.python)
-            if posixpath.normpath(p).startswith(posixpath.normpath(str(self.venv_dir)))
-        ]
+        current_executable = vistir.compat.Path(sys.executable).as_posix()
+        if not self.python or self.python == current_executable:
+            return sys.path
+        elif any([sys.prefix == self.prefix, not self.is_venv]):
+            return sys.path
+        cmd_args = [self.python, "-c", "import json, sys; print(json.dumps(sys.path))"]
+        path, _ = vistir.misc.run(cmd_args, return_object=False, nospin=True, block=True, combine_stderr=False)
+        path = json.loads(path.strip())
         return path
 
     @cached_property
     def system_paths(self):
         paths = {}
-        sysconfig = self.safe_import("sysconfig")
-        paths = sysconfig.get_paths()
+        paths = get_paths()
         return paths
 
     @cached_property
     def sys_prefix(self):
-        """The prefix run inside the context of the virtualenv
+        """The prefix run inside the context of the environment
 
-        :return: The python prefix inside the virtualenv
+        :return: The python prefix inside the environment
         :rtype: :data:`sys.prefix`
         """
 
@@ -234,19 +296,14 @@ class VirtualEnv(object):
     def paths(self):
         paths = {}
         with vistir.contextmanagers.temp_environ(), vistir.contextmanagers.temp_path():
-            os.environ["PYTHONUSERBASE"] = vistir.compat.fs_str(self.venv_dir.as_posix())
             os.environ["PYTHONIOENCODING"] = vistir.compat.fs_str("utf-8")
             os.environ["PYTHONDONTWRITEBYTECODE"] = vistir.compat.fs_str("1")
-            sysconfig = self.safe_import("sysconfig")
-            self._modules["sysconfig"] = sysconfig
             paths = self.base_paths
+            os.environ["PATH"] = paths["PATH"]
+            os.environ["PYTHONPATH"] = paths["PYTHONPATH"]
             if "headers" not in paths:
                 paths["headers"] = paths["include"]
         return paths
-
-    @property
-    def scripts_dir(self):
-        return self.paths["scripts"]
 
     @property
     def libdir(self):
@@ -255,17 +312,114 @@ class VirtualEnv(object):
             return "purelib", purelib
         return "platlib", self.paths["platlib"]
 
+    def find_egg(self, egg_dist):
+        site_packages = get_python_lib()
+        search_filename = "{0}.egg-link".format(egg_dist.project_name)
+        try:
+            user_site = site.getusersitepackages()
+        except AttributeError:
+            user_site = site.USER_SITE
+        search_locations = [site_packages, user_site]
+        for site_directory in search_locations:
+            egg = os.path.join(site_directory, search_filename)
+            if os.path.isfile(egg):
+                return egg
+
+    def locate_dist(self, dist):
+        location = self.find_egg(dist)
+        if not location:
+            return dist.location
+
+    def dist_is_in_project(self, dist):
+        from .project import _normalized
+        prefix = _normalized(self.base_paths["prefix"])
+        location = self.locate_dist(dist)
+        if not location:
+            return False
+        return _normalized(location).startswith(prefix)
+
+    def get_installed_packages(self):
+        workingset = self.get_working_set()
+        packages = [pkg for pkg in workingset if self.dist_is_in_project(pkg)]
+        return packages
+
+    def get_finder(self):
+        from .vendor.pip_shims import Command, cmdoptions, index_group, PackageFinder
+        from .environments import PIPENV_CACHE_DIR
+        index_urls = [source.get("url") for source in self.sources]
+
+        class PipCommand(Command):
+            name = "PipCommand"
+
+        pip_command = PipCommand()
+        index_opts = cmdoptions.make_option_group(
+            index_group, pip_command.parser
+        )
+        cmd_opts = pip_command.cmd_opts
+        pip_command.parser.insert_option_group(0, index_opts)
+        pip_command.parser.insert_option_group(0, cmd_opts)
+        pip_args = self._modules["pipenv"].utils.prepare_pip_source_args(self.sources, [])
+        pip_options, _ = pip_command.parser.parse_args(pip_args)
+        pip_options.cache_dir = PIPENV_CACHE_DIR
+        pip_options.pre = self.pipfile.get("pre", False)
+        with pip_command._build_session(pip_options) as session:
+            finder = PackageFinder(
+                find_links=pip_options.find_links,
+                index_urls=index_urls, allow_all_prereleases=pip_options.pre,
+                trusted_hosts=pip_options.trusted_hosts,
+                process_dependency_links=pip_options.process_dependency_links,
+                session=session
+            )
+            yield finder
+
+    def get_package_info(self):
+        dependency_links = []
+        packages = self.get_installed_packages()
+        # This code is borrowed from pip's current implementation
+        for dist in packages:
+            if dist.has_metadata('dependency_links.txt'):
+                dependency_links.extend(dist.get_metadata_lines('dependency_links.txt'))
+
+        with self.get_finder() as finder:
+            finder.add_dependency_links(dependency_links)
+
+            for dist in packages:
+                typ = 'unknown'
+                all_candidates = finder.find_all_candidates(dist.key)
+                if not finder.pip_options.pre:
+                    # Remove prereleases
+                    all_candidates = [
+                        candidate for candidate in all_candidates
+                        if not candidate.version.is_prerelease
+                    ]
+
+                if not all_candidates:
+                    continue
+                best_candidate = max(all_candidates, key=finder._candidate_sort_key)
+                remote_version = best_candidate.version
+                if best_candidate.location.is_wheel:
+                    typ = 'wheel'
+                else:
+                    typ = 'sdist'
+                # This is dirty but makes the rest of the code much cleaner
+                dist.latest_version = remote_version
+                dist.latest_filetype = typ
+                yield dist
+
+    def get_outdated_packages(self):
+        return [
+            pkg for pkg in self.get_package_info()
+            if pkg.latest_version._version > pkg.parsed_version._version
+        ]
+
+    @property
+    def scripts_dir(self):
+        return self.base_paths["scripts"]
+
     @cached_property
     def initial_working_set(self):
-        sysconfig = self.safe_import("sysconfig")
-        pkg_resources = self.safe_import("pkg_resources")
-        base = sysconfig.get_config_var("prefix")
-        base_path = sysconfig._INSTALL_SCHEMES[sysconfig._get_default_scheme()]["scripts"]
-        system_python = posixpath.join(
-            base_path.format(base=base), "python"
-        )
-        system_path = self.get_sys_path(system_python)
-        working_set = pkg_resources.WorkingSet(system_path)
+        system_path = self.get_sys_path(self.system_python)
+        working_set = self._modules["pkg_resources"].WorkingSet(system_path)
         return working_set
 
     def get_distributions(self):
@@ -275,8 +429,9 @@ class VirtualEnv(object):
         :rtype: iterator
         """
 
-        pkg_resources = self.safe_import("pkg_resources")
-        return pkg_resources.find_distributions(self.paths["purelib"], only=True)
+        return self._modules["pkg_resources"].find_distributions(
+            self.paths["PYTHONPATH"], only=True
+        )
 
     def get_working_set(self):
         """Retrieve the working set of installed packages for the virtualenv.
@@ -285,9 +440,7 @@ class VirtualEnv(object):
         :rtype: :class:`pkg_resources.WorkingSet`
         """
 
-        working_set = None
-        import pkg_resources
-        working_set = pkg_resources.WorkingSet(self.sys_path)
+        working_set = self._modules["pkg_resources"].WorkingSet(self.sys_path)
         return working_set
 
     @cached_property
@@ -307,17 +460,17 @@ class VirtualEnv(object):
         :rtype: list
         """
 
-        headers = self.paths["headers"]
+        headers = self.base_paths["headers"]
         headers = headers / "python{0}".format(self.python_version) / pkgname
         install_arg = "install" if not develop else "develop"
         return [
             self.python, "-u", "-c", SETUPTOOLS_SHIM % setup_py, install_arg,
             "--single-version-externally-managed",
-            "--install-headers={0}".format(self.paths["headers"]),
-            "--install-purelib={0}".format(self.paths["purelib"]),
-            "--install-platlib={0}".format(self.paths["platlib"]),
-            "--install-scripts={0}".format(self.scripts_dir),
-            "--install-data={0}".format(self.paths["data"]),
+            "--install-headers={0}".format(self.base_paths["headers"]),
+            "--install-purelib={0}".format(self.base_paths["purelib"]),
+            "--install-platlib={0}".format(self.base_paths["platlib"]),
+            "--install-scripts={0}".format(self.base_paths["scripts"]),
+            "--install-data={0}".format(self.base_paths["data"]),
         ]
 
     def setuptools_install(self, chdir_to, pkg_name, setup_py_path=None, editable=False):
@@ -328,7 +481,7 @@ class VirtualEnv(object):
         :param  bool editable: Whether the package is editable, defaults to False
         """
 
-        install_options = ["--prefix={0}".format(self.venv_dir.as_posix()),]
+        install_options = ["--prefix={0}".format(self.prefix.as_posix()),]
         with vistir.contextmanagers.cd(chdir_to):
             c = self.run(
                 self.get_setup_install_args(pkg_name, setup_py_path, develop=editable) +
@@ -396,20 +549,23 @@ class VirtualEnv(object):
         original_user_base = os.environ.get("PYTHONUSERBASE", None)
         original_venv = os.environ.get("VIRTUAL_ENV", None)
         parent_path = vistir.compat.Path(__file__).absolute().parent.parent.as_posix()
+        prefix = self.prefix.as_posix()
         with vistir.contextmanagers.temp_environ(), vistir.contextmanagers.temp_path():
+            os.environ["PATH"] = os.pathsep.join([
+                vistir.compat.fs_str(self.scripts_dir),
+                vistir.compat.fs_str(self.prefix.as_posix()),
+                os.environ.get("PATH", "")
+            ])
             os.environ["PYTHONIOENCODING"] = vistir.compat.fs_str("utf-8")
             os.environ["PYTHONDONTWRITEBYTECODE"] = vistir.compat.fs_str("1")
-            activate_this = os.path.join(self.scripts_dir, "activate_this.py")
-            with open(activate_this, "r") as f:
-                code = compile(f.read(), activate_this, "exec")
-                exec(code, dict(__file__=activate_this))
-            os.environ["PYTHONUSERBASE"] = vistir.compat.fs_str(self.venv_dir.as_posix())
-            os.environ["VIRTUAL_ENV"] = vistir.compat.fs_str(self.venv_dir.as_posix())
+            os.environ["PATH"] = self.base_paths["PATH"]
+            os.environ["PYTHONPATH"] = self.base_paths["PYTHONPATH"]
+            if self.is_venv:
+                os.environ["VIRTUAL_ENV"] = vistir.compat.fs_str(prefix)
             sys.path = self.sys_path
             sys.prefix = self.sys_prefix
-            pkg_resources = self.safe_import("pkg_resources")
+            site.addsitedir(self.base_paths["purelib"])
             if include_extras:
-                site = self.safe_import("site")
                 site.addsitedir(parent_path)
                 extra_dists = list(self.extra_dists) + extra_dists
                 for extra_dist in extra_dists:
@@ -419,9 +575,7 @@ class VirtualEnv(object):
             try:
                 yield
             finally:
-                print("Deactivating virtualenv...")
                 del os.environ["VIRTUAL_ENV"]
-                del os.environ["PYTHONUSERBASE"]
                 if original_user_base:
                     os.environ["PYTHONUSERBASE"] = original_user_base
                 if original_venv:
